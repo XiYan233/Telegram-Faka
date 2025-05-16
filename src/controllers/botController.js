@@ -894,6 +894,7 @@ async function handleStats(msg, adminUserIds) {
     const usedCards = await Card.countDocuments({ used: true });
     const totalOrders = await Order.countDocuments();
     const pendingOrders = await Order.countDocuments({ status: 'pending' });
+    const expiredOrders = await Order.countDocuments({ status: 'expired' });
     const completedOrders = await Order.countDocuments({ status: 'delivered' });
     
     const statsMessage = 
@@ -902,6 +903,7 @@ async function handleStats(msg, adminUserIds) {
       `🔑 卡密数量：${usedCards}/${totalCards}\n` +
       `📃 订单总量：${totalOrders}\n` +
       `⏳ 待处理订单：${pendingOrders}\n` +
+      `⌛ 已过期订单：${expiredOrders}\n` +
       `✅ 已完成订单：${completedOrders}`;
     
     await botInstance.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown' });

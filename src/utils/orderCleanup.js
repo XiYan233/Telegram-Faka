@@ -2,6 +2,7 @@
  * 订单清理工具，处理超时的待支付订单
  */
 const { Order } = require('../models/orderModel');
+const { Card } = require('../models/cardModel');
 
 /**
  * 清理超时未支付的订单
@@ -42,7 +43,24 @@ async function cleanupPendingOrders(timeoutMinutes = 30) {
       }
     );
     
-    console.log(`已将 ${orderIds.length} 个订单标记为过期`);
+    // 释放可能已分配给这些订单的卡密
+    for (const order of expiredOrders) {
+      if (order.cardId) {
+        await Card.findByIdAndUpdate(
+          order.cardId,
+          { used: false, orderId: null, usedAt: null }
+        );
+        console.log(`已释放订单 ${order._id} 关联的卡密 ${order.cardId}`);
+      }
+    }
+    
+    // 同时释放所有被这些订单占用的卡密
+    await Card.updateMany(
+      { orderId: { $in: orderIds } },
+      { used: false, orderId: null, usedAt: null }
+    );
+    
+    console.log(`已将 ${orderIds.length} 个订单标记为过期并释放相关卡密`);
     
     return {
       count: orderIds.length,
