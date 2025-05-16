@@ -1,0 +1,65 @@
+version: '3'
+
+services:
+  # Node.js 应用服务
+  app:
+    build: .
+    restart: always
+    environment:
+      # MongoDB连接配置，指向docker-compose中的mongodb服务
+      - MONGODB_URI=mongodb://mongodb:27017/telegram-faka
+      # 控制是否初始化数据库，设置为false可跳过初始化
+      - INIT_DB=true
+      # 设置运行环境为开发模式，启用测试支付功能
+      - NODE_ENV=development
+      # 其他环境变量将从.env文件加载
+    env_file:
+      - .env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # MongoDB 服务
+  mongodb:
+    image: mongo:latest
+    restart: always
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - app-network
+    command: mongod --bind_ip_all
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+      
+  # Caddy 服务 - 反向代理及自动HTTPS
+  caddy:
+    image: caddy
+    command: caddy reverse-proxy --from ${DOMAIN:-localhost} --to app:3000
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    networks:
+      - app-network
+
+# 定义网络
+networks:
+  app-network:
+    driver: bridge
+
+# 定义持久化卷
+volumes:
+  mongodb_data:
+  caddy_data:
+  caddy_config: 
