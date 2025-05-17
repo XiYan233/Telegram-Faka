@@ -101,4 +101,5 @@ npm run dev
 
 - 请确保您的服务器可以被公网访问，以便接收 Stripe Webhook
 - 推荐使用 ngrok 或类似工具在本地开发时提供公网访问
-- 确保在生产环境中使用 HTTPS 
+- 确保在生产环境中使用 HTTPS
+- 确保您的业务符合 [Stripe平台的相关规定](https://stripe.com/legal/restricted-businesses#prohibited-businesses)
