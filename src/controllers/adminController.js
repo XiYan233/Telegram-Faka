@@ -173,6 +173,7 @@ async function handleProductCards(chatId, userId, productId) {
           [{ text: '📥 导入卡密', callback_data: `import_cards_${productId}` }],
           [{ text: '📤 导出未使用卡密', callback_data: `export_cards_${productId}_unused` }],
           [{ text: '📤 导出全部卡密', callback_data: `export_cards_${productId}_all` }],
+          [{ text: '🗑️ 删除全部卡密', callback_data: `delete_cards_${productId}` }],
           [{ text: '⬅️ 返回卡密管理', callback_data: 'manage_cards' }]
         ]
       }
@@ -336,6 +337,7 @@ async function handleEditProductById(chatId, userId, productId) {
           [{ text: '✏️ 编辑描述', callback_data: `edit_desc_${productId}` }],
           [{ text: '✏️ 编辑价格', callback_data: `edit_price_${productId}` }],
           [{ text: `${activeStatus}`, callback_data: `toggle_product_${productId}` }],
+          [{ text: '🗑️ 删除产品', callback_data: `delete_product_${productId}` }],
           [{ text: '⬅️ 返回产品管理', callback_data: 'manage_products' }]
         ]
       }
@@ -650,6 +652,20 @@ async function handleAdminCallbacks(callbackQuery, adminUserIds) {
       return true;
     }
     
+    // 处理删除产品
+    if (action.startsWith('delete_product_')) {
+      const productId = action.split('_')[2];
+      await handleDeleteProduct(chatId, userId, productId);
+      return true;
+    }
+    
+    // 处理确认删除产品
+    if (action.startsWith('confirm_delete_product_')) {
+      const productId = action.split('_')[3];
+      await confirmDeleteProduct(chatId, userId, productId);
+      return true;
+    }
+    
     // 处理切换产品状态
     if (action.startsWith('toggle_product_')) {
       const productId = action.split('_')[2];
@@ -677,6 +693,22 @@ async function handleAdminCallbacks(callbackQuery, adminUserIds) {
       const productId = parts[2];
       const type = parts[3] || 'unused';
       await handleExportCardsByProduct(chatId, userId, productId, type);
+      return true;
+    }
+    
+    // 处理删除卡密
+    if (action.startsWith('delete_cards_')) {
+      const productId = action.split('_')[2];
+      await handleDeleteCards(chatId, userId, productId);
+      return true;
+    }
+    
+    // 处理确认删除卡密
+    if (action.startsWith('confirm_delete_cards_')) {
+      const parts = action.split('_');
+      const productId = parts[3];
+      const type = parts[4] || 'all';
+      await confirmDeleteCards(chatId, userId, productId, type);
       return true;
     }
     
@@ -997,6 +1029,184 @@ async function handleCleanupOrders(msg, adminUserIds) {
   }
 }
 
+/**
+ * 删除产品
+ */
+async function handleDeleteProduct(chatId, userId, productId) {
+  try {
+    const product = await Product.findById(productId);
+    
+    if (!product) {
+      return botInstance.sendMessage(chatId, '❌ 找不到该产品。');
+    }
+    
+    // 检查是否有关联的订单
+    const orderCount = await Order.countDocuments({ productId });
+    
+    if (orderCount > 0) {
+      // 如果有订单，提供确认选项
+      await botInstance.sendMessage(
+        chatId,
+        `⚠️ *警告*\n\n` +
+        `产品"${product.name}"有 ${orderCount} 个关联订单。\n` +
+        `删除该产品将导致这些订单无法正常显示。\n\n` +
+        `您确定要删除吗？`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ 确认删除', callback_data: `confirm_delete_product_${productId}` },
+                { text: '❌ 取消', callback_data: `edit_product_${productId}` }
+              ]
+            ]
+          }
+        }
+      );
+      return;
+    }
+    
+    // 如果没有订单，直接执行删除操作
+    await confirmDeleteProduct(chatId, userId, productId);
+    
+  } catch (error) {
+    console.error('删除产品时出错:', error);
+    await botInstance.sendMessage(chatId, '❌ 删除产品时出错，请稍后再试。');
+  }
+}
+
+/**
+ * 确认删除产品
+ */
+async function confirmDeleteProduct(chatId, userId, productId) {
+  try {
+    const product = await Product.findById(productId);
+    
+    if (!product) {
+      return botInstance.sendMessage(chatId, '❌ 找不到该产品。');
+    }
+    
+    const productName = product.name;
+    
+    // 删除产品关联的卡密
+    const deleteCardsResult = await Card.deleteMany({ productId });
+    
+    // 删除产品
+    await Product.findByIdAndDelete(productId);
+    
+    await botInstance.sendMessage(
+      chatId,
+      `✅ 产品"${productName}"已删除\n` +
+      `同时删除了 ${deleteCardsResult.deletedCount} 个关联卡密`
+    );
+    
+    // 返回产品管理
+    return handleManageProducts(chatId, userId);
+    
+  } catch (error) {
+    console.error('确认删除产品时出错:', error);
+    await botInstance.sendMessage(chatId, '❌ 删除产品时出错，请稍后再试。');
+  }
+}
+
+/**
+ * 删除卡密
+ */
+async function handleDeleteCards(chatId, userId, productId) {
+  try {
+    const product = await Product.findById(productId);
+    
+    if (!product) {
+      return botInstance.sendMessage(chatId, '❌ 找不到该产品。');
+    }
+    
+    // 获取该产品的卡密统计
+    const totalCards = await Card.countDocuments({ productId });
+    
+    if (totalCards === 0) {
+      return botInstance.sendMessage(
+        chatId,
+        `❌ 产品"${product.name}"没有卡密可删除。`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '⬅️ 返回卡密管理', callback_data: `manage_cards_${productId}` }]
+            ]
+          }
+        }
+      );
+    }
+    
+    const usedCards = await Card.countDocuments({ productId, used: true });
+    const unusedCards = await Card.countDocuments({ productId, used: false });
+    
+    await botInstance.sendMessage(
+      chatId,
+      `⚠️ *删除卡密确认*\n\n` +
+      `产品: ${product.name}\n` +
+      `总计: ${totalCards} 个卡密\n` +
+      `已用: ${usedCards} 个\n` +
+      `未用: ${unusedCards} 个\n\n` +
+      `请选择要删除的卡密类型:`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🗑️ 删除全部卡密', callback_data: `confirm_delete_cards_${productId}_all` }],
+            [{ text: '🗑️ 仅删除已使用卡密', callback_data: `confirm_delete_cards_${productId}_used` }],
+            [{ text: '🗑️ 仅删除未使用卡密', callback_data: `confirm_delete_cards_${productId}_unused` }],
+            [{ text: '❌ 取消', callback_data: `manage_cards_${productId}` }]
+          ]
+        }
+      }
+    );
+  } catch (error) {
+    console.error('处理删除卡密时出错:', error);
+    await botInstance.sendMessage(chatId, '❌ 处理删除卡密时出错，请稍后再试。');
+  }
+}
+
+/**
+ * 确认删除卡密
+ */
+async function confirmDeleteCards(chatId, userId, productId, type = 'all') {
+  try {
+    const product = await Product.findById(productId);
+    
+    if (!product) {
+      return botInstance.sendMessage(chatId, '❌ 找不到该产品。');
+    }
+    
+    let query = { productId };
+    let typeText = '所有';
+    
+    if (type === 'used') {
+      query.used = true;
+      typeText = '已使用的';
+    } else if (type === 'unused') {
+      query.used = false;
+      typeText = '未使用的';
+    }
+    
+    // 删除卡密
+    const result = await Card.deleteMany(query);
+    
+    await botInstance.sendMessage(
+      chatId,
+      `✅ 已成功删除${typeText}卡密\n\n` +
+      `产品: ${product.name}\n` +
+      `删除数量: ${result.deletedCount} 个卡密`
+    );
+    
+    // 返回卡密管理
+    return handleProductCards(chatId, userId, productId);
+    
+  } catch (error) {
+    console.error('确认删除卡密时出错:', error);
+    await botInstance.sendMessage(chatId, '❌ 删除卡密时出错，请稍后再试。');
+  }
+}
+
 module.exports = {
   initAdminController,
   isAdmin,
@@ -1010,5 +1220,9 @@ module.exports = {
   handleAdminCallbacks,
   handleAdminTextMessage,
   handleCleanupOrders,
-  processFileUpload
+  processFileUpload,
+  handleDeleteProduct,
+  confirmDeleteProduct,
+  handleDeleteCards,
+  confirmDeleteCards
 }; 

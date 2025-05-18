@@ -3,7 +3,7 @@ set -e
 
 echo "等待MongoDB就绪..."
 # 使用更健壮的等待逻辑
-max_retries=15
+max_retries=10
 retries=0
 
 # 等待MongoDB启动
@@ -66,6 +66,10 @@ if [ "${INIT_DB:-true}" = "true" ] && [ "$NEED_INIT" = "true" ]; then
 else
   echo "跳过数据库初始化，数据库已包含数据或初始化被禁用"
 fi
+
+# 释放过期卡密
+echo "释放过期卡密..."
+node src/scripts/release-expired-cards.js || echo "释放过期卡密失败，但将继续启动应用"
 
 echo "启动应用..."
 exec "$@" 

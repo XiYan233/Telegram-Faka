@@ -1,5 +1,3 @@
-version: '3'
-
 services:
   # Node.js 应用服务
   app:
