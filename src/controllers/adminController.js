@@ -66,6 +66,8 @@ async function handleAdmin(msg, adminUserIds) {
         inline_keyboard: [
           [{ text: '🛒 管理产品', callback_data: 'manage_products' }],
           [{ text: '🔑 管理卡密', callback_data: 'manage_cards' }],
+          [{ text: '📋 查看订单', callback_data: 'manage_orders' }],
+          [{ text: '🚫 用户管理', callback_data: 'manage_users' }],
           [{ text: '📊 系统统计', callback_data: 'view_stats' }]
         ]
       }
@@ -602,6 +604,266 @@ async function handleExportCards(msg, adminUserIds) {
 }
 
 /**
+ * 处理订单管理页面
+ */
+async function handleManageOrders(chatId, userId, page = 1, status = 'all') {
+  try {
+    const pageSize = 5; // 每页显示订单数量
+    const skip = (page - 1) * pageSize;
+    
+    // 查询条件
+    const query = {};
+    if (status !== 'all') {
+      query.status = status;
+    }
+    
+    // 获取总订单数
+    const totalOrders = await Order.countDocuments(query);
+    const totalPages = Math.ceil(totalOrders / pageSize);
+    
+    // 调整页码
+    page = Math.max(1, Math.min(page, totalPages || 1));
+    
+    // 获取订单数据
+    const orders = await Order.find(query)
+      .populate('productId')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(pageSize);
+    
+    if (orders.length === 0) {
+      return botInstance.sendMessage(
+        chatId,
+        '📋 没有找到符合条件的订单。',
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '⬅️ 返回', callback_data: 'admin' }]
+            ]
+          }
+        }
+      );
+    }
+    
+    // 构建订单信息
+    let message = `📋 *订单列表*  (${page}/${totalPages})\n\n`;
+    
+    for (const order of orders) {
+      const statusEmoji = getStatusEmoji(order.status);
+      const productName = order.productId ? order.productId.name : '未知产品';
+      const dateStr = formatDate(order.createdAt);
+      
+      message += `订单ID: \`${order._id}\`\n`;
+      message += `用户ID: \`${order.userId}\`\n`;
+      message += `产品: ${productName}\n`;
+      message += `金额: ¥${order.amount}\n`;
+      message += `状态: ${statusEmoji} ${order.status}\n`;
+      message += `创建时间: ${dateStr}\n\n`;
+    }
+    
+    // 构建分页和筛选按钮
+    const keyboard = [];
+    
+    // 状态筛选按钮
+    const statusButtons = [
+      { text: status === 'all' ? '✅ 全部' : '全部', callback_data: `orders_filter_all_${page}` },
+      { text: status === 'pending' ? '✅ 待支付' : '待支付', callback_data: `orders_filter_pending_${page}` },
+      { text: status === 'delivered' ? '✅ 已完成' : '已完成', callback_data: `orders_filter_delivered_${page}` },
+      { text: status === 'expired' ? '✅ 已过期' : '已过期', callback_data: `orders_filter_expired_${page}` }
+    ];
+    
+    keyboard.push(statusButtons);
+    
+    // 分页按钮
+    const paginationButtons = [];
+    if (page > 1) {
+      paginationButtons.push({ text: '⬅️ 上一页', callback_data: `orders_page_${page-1}_${status}` });
+    }
+    if (page < totalPages) {
+      paginationButtons.push({ text: '➡️ 下一页', callback_data: `orders_page_${page+1}_${status}` });
+    }
+    
+    if (paginationButtons.length > 0) {
+      keyboard.push(paginationButtons);
+    }
+    
+    // 返回按钮
+    keyboard.push([{ text: '⬅️ 返回管理菜单', callback_data: 'admin' }]);
+    
+    await botInstance.sendMessage(
+      chatId,
+      message,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: keyboard
+        }
+      }
+    );
+  } catch (error) {
+    console.error('获取订单列表时出错:', error);
+    await botInstance.sendMessage(chatId, '❌ 获取订单列表时出错，请稍后再试。');
+  }
+}
+
+/**
+ * 处理用户管理页面
+ */
+async function handleManageUsers(chatId, userId, page = 1) {
+  try {
+    const { Blacklist } = require('../models/blacklistModel');
+    
+    // 获取黑名单用户
+    const pageSize = 5;
+    const skip = (page - 1) * pageSize;
+    
+    const totalBlacklisted = await Blacklist.countDocuments();
+    const totalPages = Math.ceil(totalBlacklisted / pageSize) || 1;
+    
+    // 调整页码
+    page = Math.max(1, Math.min(page, totalPages));
+    
+    const blacklistedUsers = await Blacklist.find()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(pageSize);
+    
+    let message = '🚫 *用户黑名单管理*\n\n';
+    
+    if (blacklistedUsers.length === 0) {
+      message += '目前没有被拉黑的用户。';
+    } else {
+      message += `当前黑名单用户: ${totalBlacklisted}人\n\n`;
+      
+      for (const user of blacklistedUsers) {
+        const remainingTime = Math.max(0, Math.floor((user.banUntil - new Date()) / (1000 * 60 * 60)));
+        message += `用户ID: \`${user.userId}\`\n`;
+        message += `原因: ${user.reason}\n`;
+        message += `封禁次数: ${user.banCount}次\n`;
+        message += `剩余时间: ${remainingTime}小时\n\n`;
+      }
+    }
+    
+    // 构建分页按钮
+    const keyboard = [];
+    
+    // 如果有黑名单用户，为每个用户添加解除拉黑按钮
+    if (blacklistedUsers.length > 0) {
+      for (const user of blacklistedUsers) {
+        keyboard.push([
+          { text: `🔓 解除拉黑 ${user.userId}`, callback_data: `unblacklist_user_${user.userId}` }
+        ]);
+      }
+      keyboard.push([]);  // 添加一个空行作为分隔
+    }
+    
+    // 分页按钮
+    const paginationButtons = [];
+    if (page > 1) {
+      paginationButtons.push({ text: '⬅️ 上一页', callback_data: `users_page_${page-1}` });
+    }
+    if (page < totalPages) {
+      paginationButtons.push({ text: '➡️ 下一页', callback_data: `users_page_${page+1}` });
+    }
+    
+    if (paginationButtons.length > 0) {
+      keyboard.push(paginationButtons);
+    }
+    
+    // 操作按钮
+    keyboard.push([{ text: '🚫 手动拉黑用户', callback_data: 'blacklist_user' }]);
+    
+    // 返回按钮
+    keyboard.push([{ text: '⬅️ 返回管理菜单', callback_data: 'admin' }]);
+    
+    await botInstance.sendMessage(
+      chatId,
+      message,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: keyboard
+        }
+      }
+    );
+  } catch (error) {
+    console.error('获取黑名单用户时出错:', error);
+    await botInstance.sendMessage(chatId, '❌ 获取黑名单用户时出错，请稍后再试。');
+  }
+}
+
+/**
+ * 启动添加黑名单流程
+ */
+async function startBlacklistUser(chatId, userId) {
+  try {
+    // 设置用户状态
+    const userData = userStates[userId] || {};
+    userData.state = 'blacklisting_user';
+    userData.step = 'user_id';
+    userStates[userId] = userData;
+    
+    await botInstance.sendMessage(
+      chatId,
+      '🚫 *拉黑用户*\n\n' +
+      '请输入要拉黑的用户ID (Telegram用户ID)：',
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    console.error('启动拉黑用户流程时出错:', error);
+    await botInstance.sendMessage(chatId, '❌ 操作失败，请稍后再试。');
+  }
+}
+
+/**
+ * 处理取消拉黑用户
+ */
+async function handleUnblacklistUser(chatId, userId, targetUserId) {
+  try {
+    const { Blacklist } = require('../models/blacklistModel');
+    
+    const result = await Blacklist.unbanUser(targetUserId);
+    
+    if (result) {
+      await botInstance.sendMessage(
+        chatId,
+        `✅ 已成功将用户 \`${targetUserId}\` 从黑名单中移除。`,
+        { parse_mode: 'Markdown' }
+      );
+    } else {
+      await botInstance.sendMessage(
+        chatId,
+        `❌ 用户 \`${targetUserId}\` 不在黑名单中。`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+    
+    // 返回用户管理页面
+    return handleManageUsers(chatId, userId);
+  } catch (error) {
+    console.error('解除拉黑用户时出错:', error);
+    await botInstance.sendMessage(chatId, '❌ 解除拉黑用户时出错，请稍后再试。');
+  }
+}
+
+// 辅助函数：获取状态emoji
+function getStatusEmoji(status) {
+  switch (status) {
+    case 'pending': return '⏳';
+    case 'paid': return '💰';
+    case 'failed': return '❌';
+    case 'delivered': return '✅';
+    case 'expired': return '⌛';
+    default: return '❓';
+  }
+}
+
+// 辅助函数：格式化日期
+function formatDate(date) {
+  return new Date(date).toLocaleString();
+}
+
+/**
  * 处理管理员相关的回调查询
  */
 async function handleAdminCallbacks(callbackQuery, adminUserIds) {
@@ -621,6 +883,12 @@ async function handleAdminCallbacks(callbackQuery, adminUserIds) {
   await botInstance.answerCallbackQuery(callbackQuery.id);
   
   try {
+    // 处理返回管理员菜单
+    if (action === 'admin') {
+      await handleAdmin({ chat: { id: chatId }, from: { id: userId } }, adminUserIds);
+      return true;
+    }
+    
     // 处理管理产品
     if (action === 'manage_products') {
       await handleManageProducts(chatId, userId);
@@ -630,6 +898,56 @@ async function handleAdminCallbacks(callbackQuery, adminUserIds) {
     // 处理管理卡密
     if (action === 'manage_cards') {
       await handleManageCards(chatId, userId);
+      return true;
+    }
+    
+    // 处理管理订单
+    if (action === 'manage_orders') {
+      await handleManageOrders(chatId, userId);
+      return true;
+    }
+    
+    // 处理订单分页
+    if (action.startsWith('orders_page_')) {
+      const parts = action.split('_');
+      const page = parseInt(parts[2]);
+      const status = parts[3] || 'all';
+      await handleManageOrders(chatId, userId, page, status);
+      return true;
+    }
+    
+    // 处理订单状态筛选
+    if (action.startsWith('orders_filter_')) {
+      const parts = action.split('_');
+      const status = parts[2];
+      const page = parseInt(parts[3]) || 1;
+      await handleManageOrders(chatId, userId, page, status);
+      return true;
+    }
+    
+    // 处理用户管理
+    if (action === 'manage_users') {
+      await handleManageUsers(chatId, userId);
+      return true;
+    }
+    
+    // 处理用户分页
+    if (action.startsWith('users_page_')) {
+      const page = parseInt(action.split('_')[2]);
+      await handleManageUsers(chatId, userId, page);
+      return true;
+    }
+    
+    // 处理拉黑用户
+    if (action === 'blacklist_user') {
+      await startBlacklistUser(chatId, userId);
+      return true;
+    }
+    
+    // 处理取消拉黑用户
+    if (action.startsWith('unblacklist_user_')) {
+      const targetUserId = action.split('_')[2];
+      await handleUnblacklistUser(chatId, userId, targetUserId);
       return true;
     }
     
@@ -747,6 +1065,87 @@ async function handleAdminTextMessage(msg, adminUserIds) {
   const userData = userStates[userId];
   
   if (!userData) return false; // 没有进行中的操作
+  
+  // 处理拉黑用户流程
+  if (userData.state === 'blacklisting_user') {
+    switch (userData.step) {
+      case 'user_id':
+        const targetUserId = msg.text.trim();
+        if (!/^\d+$/.test(targetUserId)) {
+          await botInstance.sendMessage(chatId, '❌ 用户ID必须是数字，请重新输入：');
+          return true;
+        }
+        
+        userData.targetUserId = targetUserId;
+        userData.step = 'reason';
+        await botInstance.sendMessage(chatId, '请输入拉黑原因：');
+        return true;
+        
+      case 'reason':
+        const reason = msg.text.trim();
+        if (!reason) {
+          await botInstance.sendMessage(chatId, '❌ 原因不能为空，请重新输入：');
+          return true;
+        }
+        
+        userData.reason = reason;
+        userData.step = 'duration';
+        await botInstance.sendMessage(
+          chatId,
+          '请输入封禁时长（小时）\n默认为12小时：'
+        );
+        return true;
+        
+      case 'duration':
+        let hours = 12;
+        if (msg.text.trim()) {
+          hours = parseInt(msg.text.trim());
+          if (isNaN(hours) || hours <= 0) {
+            await botInstance.sendMessage(chatId, '❌ 时长必须是正整数，请重新输入：');
+            return true;
+          }
+        }
+        
+        // 执行拉黑操作
+        try {
+          const { Blacklist } = require('../models/blacklistModel');
+          await Blacklist.banUser(userData.targetUserId, userData.reason, hours);
+          
+          await botInstance.sendMessage(
+            chatId,
+            `✅ 已成功将用户 \`${userData.targetUserId}\` 拉黑 ${hours} 小时\n原因: ${userData.reason}`,
+            { parse_mode: 'Markdown' }
+          );
+          
+          // 尝试向被拉黑用户发送通知
+          try {
+            await botInstance.sendMessage(
+              userData.targetUserId,
+              `⚠️ *您已被管理员暂时禁止使用本服务*\n\n` +
+              `原因: ${userData.reason}\n` +
+              `解封时间: ${new Date(Date.now() + hours * 60 * 60 * 1000).toLocaleString()}\n\n` +
+              `如有疑问，请联系管理员。`,
+              { parse_mode: 'Markdown' }
+            );
+          } catch (notifyError) {
+            console.error('无法向用户发送拉黑通知:', notifyError);
+          }
+          
+          // 清除状态
+          delete userStates[userId];
+          
+          // 返回用户管理页面
+          await handleManageUsers(chatId, userId);
+          
+        } catch (error) {
+          console.error('拉黑用户时出错:', error);
+          await botInstance.sendMessage(chatId, '❌ 拉黑用户时出错，请稍后再试。');
+          delete userStates[userId];
+        }
+        
+        return true;
+    }
+  }
   
   // 处理添加产品的各个步骤
   if (userData.state === 'adding_product') {
@@ -1224,5 +1623,9 @@ module.exports = {
   handleDeleteProduct,
   confirmDeleteProduct,
   handleDeleteCards,
-  confirmDeleteCards
+  confirmDeleteCards,
+  handleManageOrders,
+  handleManageUsers,
+  startBlacklistUser,
+  handleUnblacklistUser
 }; 

@@ -4,6 +4,8 @@ const { Card } = require('../models/cardModel');
 const stripeController = require('./stripeController');
 const fs = require('fs');
 const path = require('path');
+const userMonitor = require('../utils/userMonitor');
+const { Blacklist } = require('../models/blacklistModel');
 
 let botInstance;
 
@@ -97,6 +99,27 @@ async function initBot(bot) {
     console.log('成功向 stripeController 注册卡密发送回调');
   } catch (error) {
     console.error('注册卡密发送回调失败:', error);
+  }
+  
+  // 向 userMonitor 注册封禁通知回调
+  try {
+    userMonitor.registerNotificationCallback(async (userId, reason, hours) => {
+      try {
+        await botInstance.sendMessage(
+          userId,
+          `⚠️ *账户已被限制*\n\n` +
+          `原因: ${reason}\n` +
+          `限制时长: ${hours}小时\n\n` +
+          `如有疑问，请联系管理员。`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch (error) {
+        console.error('发送封禁通知失败:', error);
+      }
+    });
+    console.log('成功向 userMonitor 注册封禁通知回调');
+  } catch (error) {
+    console.error('注册封禁通知回调失败:', error);
   }
   
   console.log('✅ Telegram Bot 初始化成功');
@@ -968,6 +991,25 @@ async function handleBuyProduct(chatId, userId, productId) {
   try {
     console.log(`开始处理购买请求: 用户=${userId}, 产品=${productId}`);
     
+    // 检查用户是否被拉黑
+    try {
+      const isBlacklisted = await Blacklist.isBlacklisted(userId);
+      if (isBlacklisted) {
+        const remainingTime = Math.max(0, Math.floor((isBlacklisted.banUntil - new Date()) / (1000 * 60 * 60)));
+        return botInstance.sendMessage(
+          chatId,
+          `⚠️ *暂时无法购买*\n\n` +
+          `您的账户因异常行为被暂时限制，剩余时间: ${remainingTime}小时\n` +
+          `原因: ${isBlacklisted.reason}\n\n` +
+          `如有疑问，请联系管理员。`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    } catch (blacklistError) {
+      console.error('检查用户黑名单状态时出错:', blacklistError);
+      // 继续执行，不中断购买流程
+    }
+    
     const product = await Product.findById(productId);
     
     if (!product) {
@@ -987,6 +1029,14 @@ async function handleBuyProduct(chatId, userId, productId) {
     }
     
     console.log(`产品库存充足: ${stockCount}张卡密可用`);
+    
+    // 检查用户是否在短时间内创建了过多pending订单
+    try {
+      await userMonitor.checkUserPendingOrders(userId);
+    } catch (monitorError) {
+      console.error('检查用户pending订单时出错:', monitorError);
+      // 继续执行，不中断购买流程
+    }
     
     try {
       // 检查Stripe配置
@@ -1021,6 +1071,23 @@ async function handleBuyProduct(chatId, userId, productId) {
       // 保存订单
       await order.save();
       console.log(`订单创建成功: ${order._id}`);
+      
+      // 创建订单后再次检查是否超过限制
+      try {
+        const isRestricted = await userMonitor.checkUserPendingOrders(userId);
+        if (isRestricted) {
+          // 用户已被限制，提前结束
+          return botInstance.sendMessage(
+            chatId,
+            `⚠️ *系统提醒*\n\n` +
+            `检测到您短时间内创建了多个未支付的订单，为防止滥用，您的账户已被临时限制使用。\n` +
+            `请12小时后再试，或联系管理员解除限制。`,
+            { parse_mode: 'Markdown' }
+          );
+        }
+      } catch (recheckError) {
+        console.error('二次检查用户pending订单时出错:', recheckError);
+      }
       
       // 只发送一条包含完整信息的消息
       await botInstance.sendMessage(
