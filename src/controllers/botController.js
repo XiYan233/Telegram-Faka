@@ -947,7 +947,57 @@ async function sendCardToUser(userId, orderId) {
       return false;
     }
     
-    // 查找可用的卡密
+    // 检查订单是否已有关联的卡密
+    if (order.cardId) {
+      console.log(`订单 ${orderId} 已关联卡密 ${order.cardId}，查找卡密信息`);
+      
+      // 查找关联的卡密
+      const existingCard = await Card.findById(order.cardId);
+      if (existingCard) {
+        console.log(`为订单 ${orderId} 找到已关联的卡密`);
+        
+        // 直接使用现有卡密发送给用户
+        await botInstance.sendMessage(
+          userId,
+          `✅ *订单已完成*\n\n` +
+          `商品: ${order.productId.name}\n` +
+          `订单号: ${order._id}\n` +
+          `卡密: \`${existingCard.code}\`\n\n` +
+          `感谢您的购买！`,
+          { parse_mode: 'Markdown' }
+        );
+        
+        return true;
+      }
+    }
+    
+    // 检查是否已有卡密与此订单关联（通过orderId查询）
+    const assignedCard = await Card.findOne({ orderId: order._id });
+    if (assignedCard) {
+      console.log(`订单 ${orderId} 已有关联卡密，直接发送`);
+      
+      // 确保订单状态正确
+      if (order.status !== 'delivered' || !order.cardId) {
+        order.status = 'delivered';
+        order.cardId = assignedCard._id;
+        await order.save();
+      }
+      
+      // 发送卡密给用户
+      await botInstance.sendMessage(
+        userId,
+        `✅ *订单已完成*\n\n` +
+        `商品: ${order.productId.name}\n` +
+        `订单号: ${order._id}\n` +
+        `卡密: \`${assignedCard.code}\`\n\n` +
+        `感谢您的购买！`,
+        { parse_mode: 'Markdown' }
+      );
+      
+      return true;
+    }
+    
+    // 如果没有关联的卡密，查找新的可用卡密
     const card = await Card.findOneAndUpdate(
       { productId: order.productId._id, used: false },
       { used: true, orderId, userId },

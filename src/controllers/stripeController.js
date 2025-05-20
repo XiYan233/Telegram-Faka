@@ -228,6 +228,22 @@ async function processOrder(order, session) {
     return;
   }
   
+  // 检查是否已有卡密与此订单关联（防止重复分配）
+  const existingCard = await Card.findOne({ orderId: order._id });
+  if (existingCard) {
+    console.log(`订单 ${order._id} 已关联卡密 ${existingCard._id}，跳过重复处理`);
+    
+    // 如果有卡密但订单状态不对，则更新订单状态
+    if (order.status !== 'delivered') {
+      order.status = 'delivered';
+      order.cardId = existingCard._id;
+      await order.save();
+      console.log(`已更新订单 ${order._id} 状态为已发货`);
+    }
+    
+    return;
+  }
+  
   // 先更新订单状态为已支付
   order.status = 'paid';
   order.paidAt = new Date();
